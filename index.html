@@ -469,6 +469,7 @@ footer.site ul{list-style:none;padding:0;margin:0;display:flex;flex-direction:co
 @media (max-width:900px){.stage .hint{display:none}}
 @media (max-width:900px){.stage .hint{display:none}}
 @media (max-width:900px){.stage .hint{display:none}}
+@media (max-width:900px){.stage .hint{display:none}}
 .tip{position:absolute;pointer-events:none;z-index:5;background:rgba(9,17,28,.95);border:1px solid var(--line2);border-radius:10px;padding:7px 10px;font-size:12.5px;white-space:nowrap;transform:translate(14px,14px)}
 .tip b{font-family:var(--mono)}
 .side{display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -1102,21 +1103,35 @@ const Engine = (() => {
     }
 
     // relations
-    const container = new Map(), psets = new Map(), storeys = [];
+    const container = new Map(), psets = new Map(), storeys = [], typeOf = new Map(), classOf = new Map(), typeCache = new Map();
+    // propiedades de un IfcPropertySet como {"Pset.Prop": valor}
+    function readPset(pd) {
+      const pe = ents.get(pd); if (!pe || pe.type !== "IFCPROPERTYSET") return null;
+      const pa = args(pd); const pname = S(pa[2]) || "Pset"; const out = {};
+      for (const pr of L(pa[4])) { const ppe = ents.get(R(pr)); if (!ppe) continue; const q = args(R(pr));
+        if (ppe.type === "IFCPROPERTYSINGLEVALUE" || ppe.type === "IFCPROPERTYENUMERATEDVALUE" || ppe.type === "IFCPROPERTYLISTVALUE") out[pname + "." + (S(q[0]) || "?")] = plain(q[2]); }
+      return out;
+    }
     for (const [id, e] of ents) {
       if (e.type === "IFCRELCONTAINEDINSPATIALSTRUCTURE") { const a = args(id); const s = R(a[5]); for (const r of L(a[4])) container.set(R(r), s); }
       else if (e.type === "IFCRELDEFINESBYPROPERTIES") {
-        const a = args(id); const pd = R(a[5]); const pe = ents.get(pd); if (!pe || pe.type !== "IFCPROPERTYSET") continue;
-        const pa = args(pd); const pname = S(pa[2]) || "Pset";
-        for (const pr of L(pa[4])) { const ppe = ents.get(R(pr)); if (!ppe) continue; const q = args(R(pr));
-          let v = "";
-          if (ppe.type === "IFCPROPERTYSINGLEVALUE") v = plain(q[2]);
-          else if (ppe.type === "IFCPROPERTYENUMERATEDVALUE") v = plain(q[2]);
-          else if (ppe.type === "IFCPROPERTYLISTVALUE") v = plain(q[2]);
-          else continue;
-          for (const o of L(a[4])) { const k = R(o); if (!psets.has(k)) psets.set(k, {}); psets.get(k)[pname + "." + (S(q[0]) || "?")] = v; } }
+        const a = args(id); const props = readPset(R(a[5])); if (!props) continue;
+        for (const o of L(a[4])) { const k = R(o); if (!psets.has(k)) psets.set(k, {}); Object.assign(psets.get(k), props); }
+      }
+      else if (e.type === "IFCRELDEFINESBYTYPE") { const a = args(id); const t = R(a[5]); for (const r of L(a[4])) typeOf.set(R(r), t); }
+      else if (e.type === "IFCRELASSOCIATESCLASSIFICATION") {
+        const a = args(id); const c = R(a[5]); const ce = ents.get(c); if (!ce || ce.type !== "IFCCLASSIFICATIONREFERENCE") continue;
+        const ca = args(c); const code = [S(ca[1]), S(ca[2])].filter(Boolean).join(" ");
+        for (const r of L(a[4])) { const k = R(r); if (!classOf.has(k)) classOf.set(k, []); classOf.get(k).push(code); }
       }
       else if (e.type === "IFCBUILDINGSTOREY") storeys.push(id);
+    }
+    // tipo (IfcTypeObject): nombre y propiedades de tipo (Revit exporta ahí muchos parámetros)
+    function typeInfo(tid) {
+      if (!tid) return null; if (typeCache.has(tid)) return typeCache.get(tid);
+      const ta = args(tid); const props = {};
+      for (const p of L(ta[5])) Object.assign(props, readPset(R(p)) || {});
+      const info = { name: S(ta[2]) || "", props }; typeCache.set(tid, info); return info;
     }
     // contained via aggregation to an element hosted in a storey (e.g. parts) -> inherit
     const elements = new Map();
@@ -1126,8 +1141,11 @@ const Engine = (() => {
       const a = args(id); const gid = S(a[0]); if (!gid) continue;
       const M = place(R(a[5]));
       const st = container.get(id); const sa = st ? args(st) : [];
+      const ti = typeInfo(typeOf.get(id)); const inst = psets.get(id) || {};
+      const props = ti ? Object.assign({}, ti.props, inst) : inst;   // la instancia manda sobre el tipo
       elements.set(gid, { id: gid, step: id, cls: ifcName(e.type), name: S(a[2]) || "", level: S(sa[2]) || "Sin nivel",
-        pos: [M[3] * scale, M[7] * scale, M[11] * scale], dir: [M[0], M[4]], props: psets.get(id) || {} });
+        objectType: S(a[4]) || "", typeName: ti ? ti.name : "", tag: S(a[7]) || "", classif: classOf.get(id) || (typeOf.get(id) && classOf.get(typeOf.get(id))) || [],
+        pos: [M[3] * scale, M[7] * scale, M[11] * scale], dir: [M[0], M[4]], props });
     }
     const vocab = {};
     for (const el of elements.values()) { (vocab[el.cls] ||= new Set()); Object.keys(el.props).forEach(k => vocab[el.cls].add(k)); }
